@@ -1,7 +1,7 @@
 local M = {}
 
 local cfg = {
-  socket = '/tmp/lazycmd-mpv.sock',
+  socket = '/tmp/lazydeck-mpv.sock',
   mpv_args = {
     '--idle=yes',
     '--no-video',
@@ -34,23 +34,23 @@ local state = {
   setup_called = false,
   reload_pending = false,
   follow_current_on_reload = false,
-  http_resolver_name = 'mpv-track',
+  http_resolver_name = 'music-track',
   next_http_track_id = 0,
 }
 
 local socket_send
 local MPV_SOCKET_NOT_READY = 'mpv socket not ready yet'
 
-local function dim(s) return lc.style.span(tostring(s or '')):fg 'blue' end
-local function warm(s) return lc.style.span(tostring(s or '')):fg 'yellow' end
-local function okc(s) return lc.style.span(tostring(s or '')):fg 'green' end
-local function titlec(s) return lc.style.span(tostring(s or '')):fg 'white' end
+local function dim(s) return deck.style.span(tostring(s or '')):fg 'blue' end
+local function warm(s) return deck.style.span(tostring(s or '')):fg 'yellow' end
+local function okc(s) return deck.style.span(tostring(s or '')):fg 'green' end
+local function titlec(s) return deck.style.span(tostring(s or '')):fg 'white' end
 
 local function volume_bottom_line()
   local vol = state.volume
   if type(vol) ~= 'number' then return nil end
   local color = 'cyan'
-  return lc.style.line {
+  return deck.style.line {
     (''):fg(color),
     string.format('  %.0f%% ', vol):fg('white'):bg(color),
     (''):fg(color),
@@ -67,7 +67,7 @@ local function set_mpv_pid(pid, reason, detail)
 
   if prev == pid then return end
 
-  lc.log(
+  deck.log(
     'info',
     'mpv_pid {} -> {}: {}{}',
     tostring(prev),
@@ -77,15 +77,15 @@ local function set_mpv_pid(pid, reason, detail)
   )
 end
 
-local function current_path_is_mpv()
-  local path = lc.api.get_current_path() or {}
-  return path[1] == 'mpv'
+local function current_path_is_music()
+  local path = deck.api.get_current_path() or {}
+  return path[1] == 'music' or path[2] == 'playing'
 end
 
 local function notify_error(err)
-  lc.notify(lc.style.line {
-    lc.style.span('mpv: '):fg 'red',
-    lc.style.span(tostring(err)):fg 'red',
+  deck.notify(deck.style.line {
+    deck.style.span('mpv: '):fg 'red',
+    deck.style.span(tostring(err)):fg 'red',
   })
 end
 
@@ -154,7 +154,7 @@ local function respond_local_track(request, respond)
 end
 
 local function ensure_http_resolver_registered()
-  lc.http_server.register_resolver(current_http_resolver_name(), respond_local_track)
+  deck.http_server.register_resolver(current_http_resolver_name(), respond_local_track)
 end
 
 local function next_local_track_id()
@@ -163,42 +163,20 @@ local function next_local_track_id()
 end
 
 local function build_local_track_url(local_id)
-  return lc.http_server.url(current_http_resolver_name(), { id = tostring(local_id) })
+  return deck.http_server.url(current_http_resolver_name(), { id = tostring(local_id) })
 end
 
 local function schedule_reload()
   if state.reload_pending then return end
   state.reload_pending = true
-  lc.defer_fn(function()
+  deck.defer_fn(function()
     state.reload_pending = false
-    if current_path_is_mpv() then lc.cmd 'reload' end
+    if current_path_is_music() then deck.cmd 'reload' end
   end, 50)
 end
 
 local function request_follow_current_on_reload()
-  if current_path_is_mpv() then state.follow_current_on_reload = true end
-end
-
-local function sync_hover_to_current_entry(entries)
-  if not state.follow_current_on_reload then return end
-  state.follow_current_on_reload = false
-
-  if not current_path_is_mpv() then return end
-
-  local current_key = nil
-  for _, entry in ipairs(entries or {}) do
-    local item = entry.player_item or {}
-    if item.current == true or item.playing == true then
-      current_key = entry.key
-      break
-    end
-  end
-
-  if current_key == nil then return end
-
-  lc.defer_fn(function()
-    if current_path_is_mpv() then lc.api.set_hovered { 'mpv', tostring(current_key) } end
-  end, 0)
+  if current_path_is_music() then state.follow_current_on_reload = true end
 end
 
 local function setup_runtime()
@@ -223,20 +201,20 @@ local function setup_runtime()
     end
   end)
 
-  lc.hook.pre_quit(function()
+  deck.hook.pre_quit(function()
     local ok, err = M.quit_sync()
-    if not ok and err then lc.log('warn', 'failed to quit mpv: {}', err) end
+    if not ok and err then deck.log('warn', 'failed to quit mpv: {}', err) end
   end)
 end
 
 local function ensure_setup_called()
   if state.setup_called then return end
-  error 'mpv.setup() must be called before using the mpv module'
+  error 'music.setup() must be called before using the music module'
 end
 
 local function ensure_ready() ensure_setup_called() end
 
-local function socket_exists() return lc.fs.stat(current_cfg().socket).exists end
+local function socket_exists() return deck.fs.stat(current_cfg().socket).exists end
 
 local function finish_waiters(ok, err)
   local waiters = state.mpv_waiters
@@ -311,7 +289,7 @@ local function emit_player_event(event)
 end
 
 local function handle_socket_line(line)
-  local ok, decoded = pcall(lc.json.decode, line or '')
+  local ok, decoded = pcall(deck.json.decode, line or '')
   if not ok or type(decoded) ~= 'table' then return end
 
   if decoded.event then
@@ -338,7 +316,7 @@ local function ensure_socket()
 
   if state.sock then close_socket 'mpv socket reset' end
 
-  local sock = lc.socket.connect('unix:' .. current.socket)
+  local sock = deck.socket.connect('unix:' .. current.socket)
   sock:on_line(function(line) handle_socket_line(line) end)
   state.sock = sock
   state.sock_path = current.socket
@@ -380,7 +358,7 @@ socket_send = function(payload, cb)
 
   if cb then state.pending_requests[request_id] = cb end
 
-  local write_ok, write_err = pcall(function() sock:write(lc.json.encode(payload)) end)
+  local write_ok, write_err = pcall(function() sock:write(deck.json.encode(payload)) end)
   if write_ok then return end
 
   state.pending_requests[request_id] = nil
@@ -403,7 +381,7 @@ end
 local function mpv_request_no_spawn_p(command)
   if not socket_exists() then
     if state.mpv_starting then
-      lc.log(
+      deck.log(
         'info',
         'mpv socket not ready yet while starting: {}; pid={}',
         table.concat(command or {}, ' '),
@@ -432,7 +410,7 @@ local function probe_mpv_p()
     local current = current_cfg()
     set_mpv_pid(nil, 'probe_mpv failed', err)
     close_socket(err)
-    if socket_exists() then lc.fs.remove(current.socket) end
+    if socket_exists() then deck.fs.remove(current.socket) end
     return Promise.reject(err)
   end)
 end
@@ -446,14 +424,14 @@ local function wait_for_socket(attempt)
   probe_mpv_p():next(function()
     if state.mpv_starting then finish_waiters(true) end
   end, function()
-    lc.defer_fn(function() wait_for_socket(attempt + 1) end, 100)
+    deck.defer_fn(function() wait_for_socket(attempt + 1) end, 100)
   end)
 end
 
 local function ensure_mpv_p()
   ensure_ready()
 
-  if not lc.system.executable 'mpv' then return Promise.reject 'mpv not found in PATH' end
+  if not deck.system.executable 'mpv' then return Promise.reject 'mpv not found in PATH' end
 
   return probe_mpv_p():catch(function(err)
     local waiter_p = Promise.new(function(resolve, reject)
@@ -463,14 +441,14 @@ local function ensure_mpv_p()
       state.mpv_starting = true
       local current = current_cfg()
       close_socket 'mpv restarting'
-      if socket_exists() then lc.fs.remove(current.socket) end
+      if socket_exists() then deck.fs.remove(current.socket) end
 
       local cmd = { 'mpv' }
       for _, arg in ipairs(current.mpv_args or {}) do
         table.insert(cmd, arg)
       end
       table.insert(cmd, '--input-ipc-server=' .. current.socket)
-      local pid = lc.system.spawn(cmd)
+      local pid = deck.system.spawn(cmd)
       set_mpv_pid(pid ~= 0 and pid or nil, 'spawned mpv', table.concat(cmd, ' '))
       wait_for_socket(1)
     end)
@@ -543,14 +521,14 @@ local function default_track_display(item, player, meta)
   local marker = dim '  '
   if current then marker = (player.pause == true) and warm '⏸ ' or okc '▶ ' end
 
-  return lc.style.line {
+  return deck.style.line {
     marker,
     titlec(item.title or item.filename or meta.url or ('#' .. tostring(item.id or '?'))),
   }
 end
 
 local function jump_to_entry()
-  local target = lc.api.get_hovered()
+  local target = deck.api.get_hovered()
   if not target or target.playlist_index == nil then return false end
 
   with_notify(M.player_jump(target.playlist_index))
@@ -577,7 +555,7 @@ local function play_prev()
 end
 
 local function remove_entry()
-  local target = lc.api.get_hovered()
+  local target = deck.api.get_hovered()
   if not target or target.playlist_index == nil then return false end
 
   with_notify(M.player_remove(target.playlist_index))
@@ -589,9 +567,9 @@ local function adjust_volume(delta)
   M.player_adjust_volume(delta)
     :next(function(volume)
       if type(volume) == 'number' then
-        lc.notify(lc.style.line {
-          lc.style.span('mpv: '):fg 'cyan',
-          lc.style.span(string.format('Volume %.0f%%', volume)):fg 'white',
+        deck.notify(deck.style.line {
+          deck.style.span('mpv: '):fg 'cyan',
+          deck.style.span(string.format('Volume %.0f%%', volume)):fg 'white',
         })
       end
     end)
@@ -602,20 +580,22 @@ end
 
 local function base_track_keymap()
   local keymap = current_cfg().keymap or {}
+  local enter = keymap.enter or keymap.play_now or '<enter>'
   return {
-    [keymap.enter] = { callback = jump_to_entry, desc = 'jump to this song' },
-    [keymap.toggle_pause] = { callback = toggle_pause, desc = 'pause or resume player' },
-    [keymap.next] = { callback = play_next, desc = 'next song' },
-    [keymap.prev] = { callback = play_prev, desc = 'previous song' },
-    [keymap.delete] = { callback = remove_entry, desc = 'remove from queue' },
-    [keymap.volume_up] = { callback = function() return adjust_volume(5) end, desc = 'volume up' },
-    [keymap.volume_down] = { callback = function() return adjust_volume(-5) end, desc = 'volume down' },
+    [enter] = { callback = jump_to_entry, desc = 'jump to this song' },
+    [keymap.toggle_pause or 'p'] = { callback = toggle_pause, desc = 'pause or resume player' },
+    [keymap.next or 'n'] = { callback = play_next, desc = 'next song' },
+    [keymap.prev or 'N'] = { callback = play_prev, desc = 'previous song' },
+    [keymap.delete or 'dd'] = { callback = remove_entry, desc = 'remove from queue' },
+    [keymap.volume_up or '+'] = { callback = function() return adjust_volume(5) end, desc = 'volume up' },
+    [keymap.volume_down or '-'] = { callback = function() return adjust_volume(-5) end, desc = 'volume down' },
   }
 end
 
 local function control_only_keymap()
   local keymap = base_track_keymap()
-  keymap[current_cfg().keymap.enter] = nil
+  local current = current_cfg().keymap or {}
+  keymap[current.enter or current.play_now or '<enter>'] = nil
   return keymap
 end
 
@@ -628,9 +608,9 @@ local function merge_keymap(extra)
 end
 
 function M.setup(opt)
-  local global_keymap = lc.config.get().keymap or {}
-  cfg = lc.tbl_deep_extend('force', cfg, { keymap = global_keymap }, opt or {})
-  state.http_resolver_name = 'mpv-track-' .. tostring(cfg.socket or '/tmp/lazycmd-mpv.sock'):gsub('[^%w]+', '-')
+  local global_keymap = deck.config.get().keymap or {}
+  cfg = deck.tbl_deep_extend('force', cfg, { keymap = global_keymap }, opt or {})
+  state.http_resolver_name = 'music-track-' .. tostring(cfg.socket or '/tmp/lazydeck-mpv.sock'):gsub('[^%w]+', '-')
   state.setup_called = true
   setup_runtime()
 end
@@ -696,9 +676,9 @@ function M.player_remove(index)
 end
 
 function M.quit_sync()
-  lc.log('info', 'quitting mpv: {}', tostring(state.mpv_pid))
+  deck.log('info', 'quitting mpv: {}', tostring(state.mpv_pid))
   if not state.mpv_pid then return true end
-  local ok, err = pcall(lc.system.kill, state.mpv_pid)
+  local ok, err = pcall(deck.system.kill, state.mpv_pid)
   if not ok then return nil, tostring(err) end
 
   set_mpv_pid(nil, 'quit_sync killed process')
@@ -778,7 +758,7 @@ function M.list(path, cb)
             keymap = control_only_keymap(),
             player = player,
             mpv_meta = {},
-            display = lc.style.line {
+            display = deck.style.line {
               dim(player.running and 'mpv queue is empty' or 'mpv is not running'),
             },
           },
@@ -786,7 +766,6 @@ function M.list(path, cb)
       end
 
       cb(entries)
-      sync_hover_to_current_entry(entries)
     end)
     :catch(function(err) cb(nil, err) end)
 end

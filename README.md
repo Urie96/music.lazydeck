@@ -1,27 +1,18 @@
-# mpv.lazycmd
+# music.lazydeck
 
-通用 `mpv` 后台播放器插件。进入 `/mpv` 后展示当前后台播放列表，也可以被其他音乐插件通过 `require('mpv')` 复用。
+通用音乐插件，包含两部分：
 
-## 功能
-
-- `/mpv` 直接显示当前 `mpv` IPC 播放队列
-- 后台 `mpv` 切歌后，如果当前就在 `/mpv`，列表会自动把悬停项移动到正在播放的歌曲
-- 如果 `mpv` 未启动，首次播放时自动拉起后台 `mpv`
-- 支持播放控制：跳转到当前项、暂停/继续、上一首、下一首、恢复播放、调节音量
-- 支持从 `/mpv` 队列删除指定歌曲
-- 其他插件可以调用 `require('mpv').play_tracks()` / `append_tracks()` 往队列里塞歌
-- 其他插件在加歌时可以为每个条目传入自己的 `keymap` 和 `preview`
-- 公开异步 API 统一返回 promise
-- 调用方必须先执行 `require('mpv').setup(...)`，插件不再自动从 `plugins` 配置里推断初始化
+- `/music`：基于后台 `mpv` 的播放队列和控制页
+- `music.new(provider, opt)`：音乐 provider 浏览器工厂，用于 OpenSubsonic、网易云音乐等插件复用通用 playlist / artist / album / track / search / recommendation UI
 
 ## 配置
 
 ```lua
 {
-  dir = 'plugins/mpv.lazycmd',
+  dir = 'plugins/music.lazydeck',
   config = function()
-    require('mpv').setup {
-      socket = '/tmp/lazycmd-mpv.sock',
+    require('music').setup {
+      socket = '/tmp/lazydeck-mpv.sock',
       mpv_args = {
         '--idle=yes',
         '--no-video',
@@ -30,98 +21,178 @@
         '--really-quiet',
       },
       keymap = {
-        jump = '<enter>',
-        pause = '<space>',
+        toggle_pause = 'p',
         next = 'n',
-        prev = 'p',
+        prev = 'N',
         delete = 'dd',
         volume_up = '+',
         volume_down = '-',
       },
     }
   end,
-},
-```
-
-别的模块直接 `require('mpv')` 后，必须先调用 `setup()`，否则公开 API 会报错。
-
-## 提供的 Lua API
-
-### `mpv.play_tracks(tracks)`
-
-替换当前队列并开始播放。
-返回一个 promise。
-
-### `mpv.append_tracks(tracks)`
-
-追加到当前队列尾部并开始播放。
-返回一个 promise。
-
-### `mpv.update_track_fields(id, fields)`
-
-按 `id` 更新队列内缓存元数据，适合自定义 `display/preview` 依赖的轻量字段刷新。
-
-### `mpv.get_player_state()`
-
-返回当前播放器状态：
-
-```lua
-{
-  running = true,
-  pause = false,
-  playlist = { ... },
 }
 ```
 
-返回一个 promise。
+## Player API
 
-### `mpv.player_remove(index)`
+`music` 保留原 `mpv.lazydeck` 的播放器 API：
 
-按 `mpv` 播放列表下标删除指定条目。
-返回一个 promise。
+- `music.play_tracks(tracks)`
+- `music.append_tracks(tracks)`
+- `music.update_track_fields(id, fields)`
+- `music.get_player_state()`
+- `music.player_next()` / `player_prev()` / `player_toggle_pause()` / `player_play()`
+- `music.player_adjust_volume(delta)`
+- `music.player_jump(index)`
+- `music.player_remove(index)`
 
-## Track 结构
-
-`play_tracks()` 和 `append_tracks()` 接收的每个 track 至少需要 `url` 或 `get_play_url(track, cb)` 二选一：
+track 至少需要 `url` 或 `get_play_url(track, cb)`：
 
 ```lua
 {
-  id = song.id,
-  url = stream_url,
-}
-
--- 或者延迟解析播放链接
-{
-  id = song.id,
+  id = '123',
+  title = 'Song',
+  artist = 'Artist',
+  album = 'Album',
+  duration = 240,
   get_play_url = function(track, cb)
-    cb(stream_url, nil)
+    cb('https://example.com/song.mp3')
   end,
+}
+```
 
-  -- 可选：自定义队列展示
-  display = function(item, player, meta) ... end,
+## Provider browser
 
-  -- 可选：自定义队列预览
-  preview = function(entry, cb) ... end,
+provider 插件自己完成配置和可用性检查，然后把已初始化 provider 传给 `music.new()`：
 
-  -- 可选：自定义 entry 级快捷键
-  keymap = {
-    ['s'] = { callback = function() ... end, desc = 'toggle star' },
+```lua
+local music = require 'music'
+local provider = require 'my-provider.provider'
+
+local browser = music.new(provider, { root = 'my-provider' })
+
+function M.list(path, cb)
+  browser:list(path, cb)
+end
+
+function M.preview(entry, cb)
+  browser:preview(entry, cb)
+end
+```
+
+## Provider 接口
+
+必需字段：
+
+```lua
+provider.name = 'my-provider'
+provider.title = 'My Provider'
+function provider.get_play_url(track, cb) end
+```
+
+`playing`（正在播放）section 始终显示。其他可选浏览能力，music 会根据函数是否存在自动生成 section：
+
+```lua
+function provider.get_playlists(cb) end
+function provider.get_playlist_tracks(playlist_id, cb) end
+
+function provider.get_artists(cb) end
+function provider.get_artist_albums(artist_id, cb) end
+
+function provider.get_albums(cb) end
+function provider.get_album_tracks(album_id, cb) end
+
+function provider.get_recommend_playlists(cb) end
+function provider.get_recommend_tracks(cb) end
+
+function provider.get_liked_tracks(cb) end
+function provider.search(query, cb) end
+```
+
+可选写操作：
+
+```lua
+function provider.set_track_liked(track, liked, cb) end
+function provider.add_track_to_playlist(track, playlist_id, cb) end
+function provider.remove_track_from_playlist(track, context, cb) end
+function provider.create_playlist(name, cb) end
+function provider.delete_playlist(playlist, cb) end
+```
+
+provider 特有页面通过 `extra_sections` 注入，例如账号二维码登录页：
+
+```lua
+provider.extra_sections = {
+  {
+    key = 'account',
+    title = 'Account',
+    icon = '',
+    description = 'Login and account status',
+    list = function(path, cb)
+      cb(entries)
+    end,
   },
 }
 ```
 
-当 track 提供 `get_play_url` 时，`mpv.lazycmd` 会在插件内部生成一个 localhost 稳定 URL；真正开始请求音频时，再调用 `get_play_url` 拿最新直链并返回重定向。这适合上游播放链接会过期的 provider。
+## 标准数据结构
 
-`mpv` 会自动把播放器控制键和你传入的 `keymap` 合并。
+### Track
 
-默认列表只显示 `mpv` 自己能通过 socket 返回的条目属性，例如 `title`、`filename`、`current/playing`。默认 preview 为空；如果需要更丰富的展示，由调用方通过 `display` 或 `preview` 自定义。
+```lua
+{
+  type = 'track',
+  id = '123',
+  title = 'Song Title',
+  artist = 'Artist',
+  album = 'Album',
+  duration = 240, -- 秒
+  liked = true,
+  source = 'my-provider',
+  raw = original_song,
+}
+```
 
-内置控制键位默认是：
+### Playlist
 
-- `jump`: 跳到当前队列项
-- `pause`: 暂停/继续
-- `next`: 下一首
-- `prev`: 上一首
-- `delete`: 从队列删除当前项
-- `volume_up`: 增大音量
-- `volume_down`: 减小音量
+```lua
+{
+  type = 'playlist',
+  id = '456',
+  name = 'Playlist Name',
+  owner = 'User',
+  track_count = 20,
+  duration = 3600,
+  description = '...',
+  source = 'recommend',
+  source_title = 'Recommended',
+  raw = original_playlist,
+}
+```
+
+### Album
+
+```lua
+{
+  type = 'album',
+  id = '789',
+  name = 'Album Name',
+  artist = 'Artist',
+  year = 2024,
+  track_count = 12,
+  duration = 3000,
+  raw = original_album,
+}
+```
+
+### Artist
+
+```lua
+{
+  type = 'artist',
+  id = 'abc',
+  name = 'Artist Name',
+  album_count = 10,
+  raw = original_artist,
+}
+```
