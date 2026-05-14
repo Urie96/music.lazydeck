@@ -1,7 +1,10 @@
 local M = {}
 
+local tmpdir = os.getenv 'TMPDIR' or '/tmp'
+local default_socket = tmpdir .. '/lazydeck-mpv.sock'
+
 local cfg = {
-  socket = '/tmp/lazydeck-mpv.sock',
+  socket = default_socket,
   mpv_args = {
     '--idle=yes',
     '--no-video',
@@ -610,7 +613,7 @@ end
 function M.setup(opt)
   local global_keymap = deck.config.get().keymap or {}
   cfg = deck.tbl_deep_extend('force', cfg, { keymap = global_keymap }, opt or {})
-  state.http_resolver_name = 'music-track-' .. tostring(cfg.socket or '/tmp/lazydeck-mpv.sock'):gsub('[^%w]+', '-')
+  state.http_resolver_name = 'music-track-' .. tostring(cfg.socket or default_socket):gsub('[^%w]+', '-')
   state.setup_called = true
   setup_runtime()
 end

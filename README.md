@@ -12,7 +12,7 @@
   dir = 'plugins/music.lazydeck',
   config = function()
     require('music').setup {
-      socket = '/tmp/lazydeck-mpv.sock',
+      -- socket = (os.getenv 'TMPDIR' or '/tmp') .. '/lazydeck-mpv.sock', -- 默认值
       mpv_args = {
         '--idle=yes',
         '--no-video',
