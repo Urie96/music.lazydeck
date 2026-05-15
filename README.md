@@ -103,6 +103,7 @@ function provider.get_albums(cb) end
 function provider.get_album_tracks(album_id, cb) end
 
 function provider.get_recommend_playlists(cb) end
+-- 推荐歌单条目会复用 get_playlist_tracks(playlist_id, cb) 进入详情页
 function provider.get_recommend_tracks(cb) end
 
 function provider.get_liked_tracks(cb) end

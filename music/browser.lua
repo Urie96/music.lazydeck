@@ -686,8 +686,14 @@ function M:route(section, path, cb)
   if section == 'recommend' then
     if #path == 2 then return self:recommend_entries(cb) end
     if path[3] == 'playlist' then
-      return self.provider.get_recommend_playlists(
-        function(items, err) cb(items and self:playlist_entries(items), err) end
+      if #path == 3 then
+        return self.provider.get_recommend_playlists(
+          function(items, err) cb(items and self:playlist_entries(items), err) end
+        )
+      end
+      return self.provider.get_playlist_tracks(
+        path[4],
+        function(items, err) cb(items and self:track_entries(items), err) end
       )
     end
     if path[3] == 'track' then
