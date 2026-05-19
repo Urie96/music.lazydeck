@@ -4,6 +4,14 @@ local player = require 'music.player'
 
 local M = {}
 
+function M.meta()
+  return {
+    icon = '󰝚',
+    desc = 'Music player and library browser',
+    color = 'magenta',
+  }
+end
+
 local default_browser = nil
 
 function M.setup(opt)
