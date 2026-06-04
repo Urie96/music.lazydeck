@@ -48,6 +48,19 @@ local function dim(s) return deck.style.span(tostring(s or '')):fg 'blue' end
 local function warm(s) return deck.style.span(tostring(s or '')):fg 'yellow' end
 local function okc(s) return deck.style.span(tostring(s or '')):fg 'green' end
 local function titlec(s) return deck.style.span(tostring(s or '')):fg 'white' end
+local function accent(s) return deck.style.span(tostring(s or '')):fg 'cyan' end
+local function mag(s) return deck.style.span(tostring(s or '')):fg 'magenta' end
+
+local function format_duration(seconds)
+  local total = tonumber(seconds or 0) or 0
+  if total <= 0 then return '-' end
+  total = math.floor(total)
+  local h = math.floor(total / 3600)
+  local m = math.floor((total % 3600) / 60)
+  local s = total % 60
+  if h > 0 then return string.format('%d:%02d:%02d', h, m, s) end
+  return string.format('%d:%02d', m, s)
+end
 
 local function volume_bottom_line()
   local vol = state.volume
@@ -530,6 +543,20 @@ local function default_track_display(item, player, meta)
   }
 end
 
+local function player_track_preview(entry)
+  local meta = entry and entry.mpv_meta or {}
+  return deck.style.text {
+    deck.style.line { okc 'Music queue' },
+    '',
+    deck.style.line { dim 'State: ', accent((entry.player or {}).pause and 'paused' or 'playing') },
+    deck.style.line { dim 'Title: ', titlec(meta.title or '-') },
+    deck.style.line { dim 'Artist: ', accent(meta.artist or '-') },
+    deck.style.line { dim 'Album: ', warm(meta.album or '-') },
+    deck.style.line { dim 'Duration: ', accent(format_duration(meta.duration)) },
+    deck.style.line { dim 'Liked: ', (meta.liked == true) and warm 'true' or mag 'false' },
+  }
+end
+
 local function jump_to_entry()
   local target = deck.api.get_hovered()
   if not target or target.playlist_index == nil then return false end
@@ -595,19 +622,10 @@ local function base_track_keymap()
   }
 end
 
-local function control_only_keymap()
-  local keymap = base_track_keymap()
-  local current = current_cfg().keymap or {}
-  keymap[current.enter or current.play_now or '<enter>'] = nil
-  return keymap
-end
-
-local function merge_keymap(extra)
-  local merged = base_track_keymap()
-  for key, value in pairs(extra or {}) do
-    merged[key] = value
+local function register_page_keymaps()
+  for key, mapping in pairs(base_track_keymap()) do
+    deck.keymap.set('main', key, mapping.callback, { path = '/music', desc = mapping.desc })
   end
-  return merged
 end
 
 function M.setup(opt)
@@ -615,6 +633,7 @@ function M.setup(opt)
   cfg = deck.tbl_deep_extend('force', cfg, { keymap = global_keymap }, opt or {})
   state.http_resolver_name = 'music-track-' .. tostring(cfg.socket or default_socket):gsub('[^%w]+', '-')
   state.setup_called = true
+  register_page_keymaps()
   setup_runtime()
 end
 
@@ -740,15 +759,7 @@ function M.list(path, cb)
             or meta.display
             or default_track_display(item, player, meta),
           bottom_line = volume_bottom_line,
-          keymap = merge_keymap(meta.keymap),
         }
-
-        if type(meta.preview) == 'function' then
-          entry.preview = function(self, preview_cb)
-            local preview = meta.preview(self, preview_cb)
-            if preview then preview_cb(preview) end
-          end
-        end
 
         table.insert(entries, entry)
       end
@@ -758,9 +769,7 @@ function M.list(path, cb)
           {
             key = 'empty',
             kind = 'info',
-            keymap = control_only_keymap(),
             player = player,
-            mpv_meta = {},
             display = deck.style.line {
               dim(player.running and 'mpv queue is empty' or 'mpv is not running'),
             },
@@ -773,6 +782,9 @@ function M.list(path, cb)
     :catch(function(err) cb(nil, err) end)
 end
 
-function M.preview(entry, cb) cb '' end
+function M.preview(entry, cb)
+  if entry and entry.mpv_meta then return cb(player_track_preview(entry)) end
+  cb ''
+end
 
 return M

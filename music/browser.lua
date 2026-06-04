@@ -58,6 +58,7 @@ function M.new(provider, opt)
     opt = opt or {},
   }
   setmetatable(self, { __index = M })
+  self:register_page_keymaps()
   return self
 end
 
@@ -65,14 +66,8 @@ function M:section_entry(spec)
   return {
     key = spec.key,
     kind = 'section',
-    display = line { style.accent(spec.icon or ''), style.dim '  ', style.titlec(spec.title) },
-    preview = function(_, cb)
-      cb(style.preview_lines {
-        deck.style.line { style.titlec(spec.title) },
-        '',
-        deck.style.line { style.dim('Provider: ' .. tostring(self.provider.title)) },
-      })
-    end,
+    title = spec.title,
+    display = line { style.accent(spec.icon or ''), style.dim ' ', style.titlec(spec.title) },
   }
 end
 
@@ -80,14 +75,9 @@ function M:extra_section_entry(section)
   return {
     key = section.key,
     kind = 'extra_section',
-    display = line { style.warm(section.icon or ''), style.dim '  ', style.titlec(section.title or section.key) },
-    preview = function(_, cb)
-      cb(style.preview_lines {
-        deck.style.line { style.titlec(section.title or section.key) },
-        '',
-        deck.style.line { style.dim(section.description or '') },
-      })
-    end,
+    title = section.title or section.key,
+    description = section.description,
+    display = line { style.warm(section.icon or ''), style.dim ' ', style.titlec(section.title or section.key) },
   }
 end
 
@@ -179,42 +169,52 @@ function M:build_player_track(track)
         style.dim ']',
       }
     end,
-    preview = function(entry, cb)
-      local meta = entry.mpv_meta or track
-      cb(style.preview_lines {
-        deck.style.line { style.okc 'Music queue' },
-        '',
-        style.kv_line('State', (entry.player or {}).pause and 'paused' or 'playing', 'accent'),
-        style.kv_line('Title', meta.title or track.title or '-'),
-        style.kv_line('Artist', meta.artist or track.artist or '-', 'accent'),
-        style.kv_line('Album', meta.album or track.album or '-', 'warm'),
-        style.kv_line('Duration', style.format_duration(meta.duration or track.duration), 'accent'),
-        style.kv_line('Liked', tostring(meta.liked == true), meta.liked == true and 'warm' or 'mag'),
-      })
-    end,
   }
-
-  if has_fn(self.provider, 'set_track_liked') then
-    local keymap = (self.opt and self.opt.keymap) or {}
-    player_track.keymap = {
-      [keymap.toggle_liked or keymap.toggle_star or 'l'] = {
-        callback = function()
-          local target = deck.api.get_hovered()
-          if target and target.mpv_meta and target.mpv_meta.id then
-            return self:set_track_liked(target.mpv_meta, target.mpv_meta.liked ~= true)
-          end
-          return self:set_track_liked(track, track.liked ~= true)
-        end,
-        desc = 'toggle liked',
-      },
-    }
-  end
 
   return player_track
 end
 
 function M:go_to_playing()
   deck.api.go_to { self.root, 'playing' }
+end
+
+function M:jump_player_entry()
+  local target = deck.api.get_hovered()
+  if not target or target.playlist_index == nil then return false end
+  player.player_jump(target.playlist_index):catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
+end
+
+function M:toggle_player_pause()
+  player.player_toggle_pause():catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
+end
+
+function M:player_next()
+  player.player_next():catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
+end
+
+function M:player_prev()
+  player.player_prev():catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
+end
+
+function M:remove_player_entry()
+  local target = deck.api.get_hovered()
+  if not target or target.playlist_index == nil then return false end
+  player.player_remove(target.playlist_index):catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
+end
+
+function M:adjust_player_volume(delta)
+  player
+    .player_adjust_volume(delta)
+    :next(function(volume)
+      if type(volume) == 'number' then style.notify_info('mpv', string.format('Volume %.0f%%', volume)) end
+    end)
+    :catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
 end
 
 function M:play_from_entry()
@@ -252,6 +252,21 @@ function M:append_track_entry()
       self:go_to_playing()
     end)
     :catch(function(err) style.notify_error(self.provider.title, err) end)
+  return true
+end
+
+function M:copy_track_play_url_entry()
+  local target = deck.api.get_hovered()
+  if not target or target.kind ~= 'track' or not target.item then return false end
+
+  self.provider.get_play_url(target.item, function(url, err)
+    if err then return style.notify_error(self.provider.title, err) end
+    if not url or url == '' then return style.notify_error(self.provider.title, 'Track play url not found') end
+
+    local ok, copy_err = pcall(deck.osc52_copy, tostring(url))
+    if not ok then return style.notify_error(self.provider.title, copy_err) end
+    style.notify_info(self.provider.title, 'Track play url copied')
+  end)
   return true
 end
 
@@ -433,50 +448,80 @@ function M:delete_playlist_entry()
   return true
 end
 
-function M:track_keymap()
+function M:register_page_keymaps()
   local keymap = (self.opt and self.opt.keymap) or {}
-  local out = {
-    [keymap.play_now or '<enter>'] = {
-      callback = function() return self:play_from_entry() end,
-      desc = 'play from here',
-    },
-    [keymap.append_to_player or 'a'] = {
-      callback = function() return self:append_track_entry() end,
-      desc = 'append to music queue',
-    },
+  local root = '/' .. self.root
+
+  local function map(path, key, callback, desc)
+    if key and key ~= '' then deck.keymap.set('main', key, callback, { path = root .. path, desc = desc }) end
+  end
+
+  local function map_many(paths, key, callback, desc)
+    for _, path in ipairs(paths) do
+      map(path, key, callback, desc)
+    end
+  end
+
+  local track_paths = {
+    '/playlist/*',
+    '/artist/*/*',
+    '/album/*',
+    '/recommend/track',
+    '/recommend/playlist/*',
+    '/liked',
+    '/search/*/track',
+    '/search/*/playlist/*',
+    '/search/*/album/*',
+    '/search/*/artist/*/*',
   }
+
+  map_many(track_paths, keymap.play_now or '<enter>', function() return self:play_from_entry() end, 'play from here')
+  map_many(track_paths, keymap.append_to_player or 'a', function() return self:append_track_entry() end, 'append to music queue')
+  map_many(track_paths, keymap.copy_play_url or 'yu', function() return self:copy_track_play_url_entry() end, 'copy track play url')
+
   if has_fn(self.provider, 'set_track_liked') then
-    out[keymap.toggle_liked or keymap.toggle_star or 'l'] =
-      { callback = function() return self:toggle_liked_entry() end, desc = 'toggle liked' }
+    map_many(track_paths, keymap.toggle_liked or keymap.toggle_star or 'l', function()
+      return self:toggle_liked_entry()
+    end, 'toggle liked')
+    map('/playing', keymap.toggle_liked or keymap.toggle_star or 'l', function()
+      return self:toggle_liked_entry()
+    end, 'toggle liked')
   end
   if has_fn(self.provider, 'add_track_to_playlist') and has_fn(self.provider, 'get_playlists') then
-    out[keymap.add_to_playlist or 'A'] =
-      { callback = function() return self:add_track_to_playlist_entry() end, desc = 'add to playlist' }
+    map_many(track_paths, keymap.add_to_playlist or 'A', function()
+      return self:add_track_to_playlist_entry()
+    end, 'add to playlist')
   end
   if has_fn(self.provider, 'remove_track_from_playlist') then
-    out[keymap.delete or 'dd'] =
-      { callback = function() return self:remove_track_from_playlist_entry() end, desc = 'remove from playlist' }
+    map('/playlist/*', keymap.delete or 'dd', function() return self:remove_track_from_playlist_entry() end, 'remove from playlist')
   end
-  return out
-end
 
-function M:playlist_keymap()
-  local keymap = (self.opt and self.opt.keymap) or {}
-  local out = {
-    [keymap.append_playlist_to_player or keymap.append_to_player or 'A'] = {
-      callback = function() return self:append_playlist_entry() end,
-      desc = 'append playlist to music queue',
-    },
+  local playlist_paths = {
+    '/playlist',
+    '/recommend/playlist',
+    '/search/*/playlist',
   }
+  map_many(playlist_paths, keymap.append_playlist_to_player or keymap.append_to_player or 'A', function()
+    return self:append_playlist_entry()
+  end, 'append playlist to music queue')
+
   if has_fn(self.provider, 'create_playlist') then
-    out[keymap.new or 'n'] =
-      { callback = function() return self:create_playlist_from_input() end, desc = 'new playlist' }
+    map('/playlist', keymap.new or 'n', function() return self:create_playlist_from_input() end, 'new playlist')
   end
   if has_fn(self.provider, 'delete_playlist') then
-    out[keymap.delete or 'dd'] =
-      { callback = function() return self:delete_playlist_entry() end, desc = 'delete playlist' }
+    map('/playlist', keymap.delete or 'dd', function() return self:delete_playlist_entry() end, 'delete playlist')
   end
-  return out
+
+  local enter = keymap.enter or keymap.play_now or '<enter>'
+  map('/playing', enter, function() return self:jump_player_entry() end, 'jump to this song')
+  map('/playing', keymap.toggle_pause or 'p', function() return self:toggle_player_pause() end, 'pause or resume player')
+  map('/playing', keymap.next or 'n', function() return self:player_next() end, 'next song')
+  map('/playing', keymap.prev or 'N', function() return self:player_prev() end, 'previous song')
+  map('/playing', keymap.delete or 'dd', function() return self:remove_player_entry() end, 'remove from queue')
+  map('/playing', keymap.volume_up or '+', function() return self:adjust_player_volume(5) end, 'volume up')
+  map('/playing', keymap.volume_down or '-', function() return self:adjust_player_volume(-5) end, 'volume down')
+
+  map('/search', keymap.search or 's', function() return self:open_search_input() end, 'search')
 end
 
 function M:track_entries(tracks)
@@ -488,8 +533,6 @@ function M:track_entries(tracks)
       kind = 'track',
       item = track,
       display = self:format_track_display(track),
-      keymap = self:track_keymap(),
-      preview = function(entry, cb) cb(preview.item(entry.item)) end,
     })
   end
   if #entries == 0 then
@@ -507,8 +550,6 @@ function M:playlist_entries(playlists)
       kind = 'playlist',
       item = playlist,
       display = self:format_playlist_display(playlist),
-      keymap = self:playlist_keymap(),
-      preview = function(entry, cb) cb(preview.item(entry.item)) end,
     })
   end
   if #entries == 0 then
@@ -526,7 +567,6 @@ function M:album_entries(albums)
       kind = 'album',
       item = album,
       display = self:format_album_display(album),
-      preview = function(entry, cb) cb(preview.item(entry.item)) end,
     })
   end
   if #entries == 0 then
@@ -544,7 +584,6 @@ function M:artist_entries(artists)
       kind = 'artist',
       item = artist,
       display = self:format_artist_display(artist),
-      preview = function(entry, cb) cb(preview.item(entry.item)) end,
     })
   end
   if #entries == 0 then
@@ -559,14 +598,14 @@ function M:recommend_entries(cb)
     table.insert(entries, {
       key = 'playlist',
       kind = 'section',
-      display = line { style.warm '󰲹', style.dim '  ', style.titlec 'Recommended Playlists' },
+      display = line { style.warm '󰲹', style.dim ' ', style.titlec 'Recommended Playlists' },
     })
   end
   if has_fn(self.provider, 'get_recommend_tracks') then
     table.insert(entries, {
       key = 'track',
       kind = 'section',
-      display = line { style.okc '󰎈', style.dim '  ', style.titlec 'Recommended Tracks' },
+      display = line { style.okc '󰎈', style.dim ' ', style.titlec 'Recommended Tracks' },
     })
   end
   cb(entries)
@@ -579,10 +618,6 @@ function M:search_root(cb)
       key = 'prompt',
       kind = 'info',
       display = line { style.titlec(('Press %s to search'):format(keymap)) },
-      keymap = {
-        [keymap] = { callback = function() return self:open_search_input() end, desc = 'search' },
-      },
-      preview = function(_, done) done(style.preview_lines { deck.style.line { style.titlec 'Search music' } }) end,
     },
   }
 end
@@ -614,14 +649,10 @@ function M:search_groups(query, cb)
       table.insert(entries, {
         key = spec.key,
         kind = 'search_group',
+        query = query,
+        title = spec.title,
+        count = #items,
         display = line { style.accent(spec.title), style.dim '  ·  ', style.okc(#items) },
-        preview = function(_, done)
-          done(style.preview_lines {
-            style.kv_line('Query', query, 'accent'),
-            style.kv_line('Type', spec.title, 'warm'),
-            style.kv_line('Count', tostring(#items), 'accent'),
-          })
-        end,
       })
     end
     cb(entries)
@@ -644,71 +675,101 @@ function M:search_items(query, kind, cb)
   end)
 end
 
-function M:route(section, path, cb)
-  if section == 'playing' then return player.list({ 'music' }, cb) end
+function M:path_matches(path, pattern)
+  return deck.path.match(path, '/' .. self.root .. pattern)
+end
 
-  if section == 'playlist' then
-    if #path == 2 then
-      return self.provider.get_playlists(function(items, err) cb(items and self:playlist_entries(items), err) end)
-    end
+function M:route(section, path, cb)
+  if self:path_matches(path, '/playing') then return player.list({ 'music' }, cb) end
+
+  if self:path_matches(path, '/playlist') then
+    return self.provider.get_playlists(function(items, err) cb(items and self:playlist_entries(items), err) end)
+  end
+  if self:path_matches(path, '/playlist/*') then
     return self.provider.get_playlist_tracks(
       path[3],
       function(items, err) cb(items and self:track_entries(items), err) end
     )
   end
 
-  if section == 'artist' then
-    if #path == 2 then
-      return self.provider.get_artists(function(items, err) cb(items and self:artist_entries(items), err) end)
-    end
-    if #path == 3 then
-      return self.provider.get_artist_albums(
-        path[3],
-        function(items, err) cb(items and self:album_entries(items), err) end
-      )
-    end
+  if self:path_matches(path, '/artist') then
+    return self.provider.get_artists(function(items, err) cb(items and self:artist_entries(items), err) end)
+  end
+  if self:path_matches(path, '/artist/*') then
+    return self.provider.get_artist_albums(
+      path[3],
+      function(items, err) cb(items and self:album_entries(items), err) end
+    )
+  end
+  if self:path_matches(path, '/artist/*/*') then
     return self.provider.get_album_tracks(
       path[4],
       function(items, err) cb(items and self:track_entries(items), err) end
     )
   end
 
-  if section == 'album' then
-    if #path == 2 then
-      return self.provider.get_albums(function(items, err) cb(items and self:album_entries(items), err) end)
-    end
+  if self:path_matches(path, '/album') then
+    return self.provider.get_albums(function(items, err) cb(items and self:album_entries(items), err) end)
+  end
+  if self:path_matches(path, '/album/*') then
     return self.provider.get_album_tracks(
       path[3],
       function(items, err) cb(items and self:track_entries(items), err) end
     )
   end
 
-  if section == 'recommend' then
-    if #path == 2 then return self:recommend_entries(cb) end
-    if path[3] == 'playlist' then
-      if #path == 3 then
-        return self.provider.get_recommend_playlists(
-          function(items, err) cb(items and self:playlist_entries(items), err) end
-        )
-      end
-      return self.provider.get_playlist_tracks(
-        path[4],
-        function(items, err) cb(items and self:track_entries(items), err) end
-      )
-    end
-    if path[3] == 'track' then
-      return self.provider.get_recommend_tracks(function(items, err) cb(items and self:track_entries(items), err) end)
-    end
+  if self:path_matches(path, '/recommend') then return self:recommend_entries(cb) end
+  if self:path_matches(path, '/recommend/playlist') then
+    return self.provider.get_recommend_playlists(
+      function(items, err) cb(items and self:playlist_entries(items), err) end
+    )
+  end
+  if self:path_matches(path, '/recommend/playlist/*') then
+    return self.provider.get_playlist_tracks(
+      path[4],
+      function(items, err) cb(items and self:track_entries(items), err) end
+    )
+  end
+  if self:path_matches(path, '/recommend/track') then
+    return self.provider.get_recommend_tracks(function(items, err) cb(items and self:track_entries(items), err) end)
   end
 
-  if section == 'liked' then
+  if self:path_matches(path, '/liked') then
     return self.provider.get_liked_tracks(function(items, err) cb(items and self:track_entries(items), err) end)
   end
 
-  if section == 'search' then
-    if #path == 2 or not path[3] or path[3] == '' then return self:search_root(cb) end
-    if #path == 3 then return self:search_groups(path[3], cb) end
-    return self:search_items(path[3], path[4], cb)
+  if self:path_matches(path, '/search') or (section == 'search' and (not path[3] or path[3] == '')) then
+    return self:search_root(cb)
+  end
+  if self:path_matches(path, '/search/*') then return self:search_groups(path[3], cb) end
+  if self:path_matches(path, '/search/*/*') then return self:search_items(path[3], path[4], cb) end
+
+  if self:path_matches(path, '/search/*/playlist/*') and has_fn(self.provider, 'get_playlist_tracks') then
+    return self.provider.get_playlist_tracks(
+      path[5],
+      function(items, err) cb(items and self:track_entries(items), err) end
+    )
+  end
+
+  if self:path_matches(path, '/search/*/album/*') and has_fn(self.provider, 'get_album_tracks') then
+    return self.provider.get_album_tracks(
+      path[5],
+      function(items, err) cb(items and self:track_entries(items), err) end
+    )
+  end
+
+  if self:path_matches(path, '/search/*/artist/*') and has_fn(self.provider, 'get_artist_albums') then
+    return self.provider.get_artist_albums(
+      path[5],
+      function(items, err) cb(items and self:album_entries(items), err) end
+    )
+  end
+
+  if self:path_matches(path, '/search/*/artist/*/*') and has_fn(self.provider, 'get_album_tracks') then
+    return self.provider.get_album_tracks(
+      path[6],
+      function(items, err) cb(items and self:track_entries(items), err) end
+    )
   end
 
   for _, extra in ipairs(self.provider.extra_sections or {}) do
@@ -738,7 +799,51 @@ end
 
 function M:preview(entry, cb)
   if not entry then return cb '' end
+
   if entry.item then return cb(preview.item(entry.item)) end
+
+  if entry.mpv_meta then
+    local meta = entry.mpv_meta or {}
+    return cb(style.preview_lines {
+      deck.style.line { style.okc 'Music queue' },
+      '',
+      style.kv_line('State', (entry.player or {}).pause and 'paused' or 'playing', 'accent'),
+      style.kv_line('Title', meta.title or '-'),
+      style.kv_line('Artist', meta.artist or '-', 'accent'),
+      style.kv_line('Album', meta.album or '-', 'warm'),
+      style.kv_line('Duration', style.format_duration(meta.duration), 'accent'),
+      style.kv_line('Liked', tostring(meta.liked == true), meta.liked == true and 'warm' or 'mag'),
+    })
+  end
+
+  if entry.kind == 'section' then
+    return cb(style.preview_lines {
+      deck.style.line { style.titlec(entry.title or entry.key or 'Section') },
+      '',
+      deck.style.line { style.dim('Provider: ' .. tostring(self.provider.title)) },
+    })
+  end
+
+  if entry.kind == 'extra_section' then
+    return cb(style.preview_lines {
+      deck.style.line { style.titlec(entry.title or entry.key or 'Section') },
+      '',
+      deck.style.line { style.dim(entry.description or '') },
+    })
+  end
+
+  if entry.kind == 'search_group' then
+    return cb(style.preview_lines {
+      style.kv_line('Query', entry.query or '-', 'accent'),
+      style.kv_line('Type', entry.title or entry.key or '-', 'warm'),
+      style.kv_line('Count', tostring(entry.count or 0), 'accent'),
+    })
+  end
+
+  if entry.kind == 'info' and entry.key == 'prompt' then
+    return cb(style.preview_lines { deck.style.line { style.titlec 'Search music' } })
+  end
+
   cb ''
 end
 

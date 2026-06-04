@@ -21,6 +21,7 @@
         '--really-quiet',
       },
       keymap = {
+        copy_play_url = 'yu',
         toggle_pause = 'p',
         next = 'n',
         prev = 'N',
@@ -45,6 +46,8 @@
 - `music.player_adjust_volume(delta)`
 - `music.player_jump(index)`
 - `music.player_remove(index)`
+
+浏览器 track 页面上按 `yu` 会通过 `provider.get_play_url(track, cb)` 解析并复制真实播放链接。
 
 track 至少需要 `url` 或 `get_play_url(track, cb)`：
 
@@ -108,6 +111,7 @@ function provider.get_recommend_tracks(cb) end
 
 function provider.get_liked_tracks(cb) end
 function provider.search(query, cb) end
+-- search 返回的 playlist / album / artist 结果会复用上面的 get_*_tracks / get_artist_albums 进入详情页
 ```
 
 可选写操作：

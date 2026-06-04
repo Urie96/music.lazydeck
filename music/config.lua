@@ -7,6 +7,7 @@ local cfg = {
     append_to_player = 'a',
     append_playlist_to_player = 'A',
     add_to_playlist = 'A',
+    copy_play_url = 'yu',
     toggle_liked = 'l',
     toggle_star = 'l',
     search = 's',
