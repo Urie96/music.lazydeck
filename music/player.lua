@@ -68,7 +68,7 @@ local function volume_bottom_line()
   local color = 'cyan'
   return deck.style.line {
     (''):fg(color),
-    string.format('  %.0f%% ', vol):fg('white'):bg(color),
+    string.format('  %.0f%% ', vol):fg('black'):bg(color),
     (''):fg(color),
   }
 end
